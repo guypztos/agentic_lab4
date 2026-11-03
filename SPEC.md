@@ -28,6 +28,15 @@ The proxy currently has no browser UI, browser SSE endpoint, structured capture 
 10. Preserve the user's reading position when new cards or streamed content arrive. Provide a visible new-traffic indication and an action to return to the newest traffic. Within each card, preserve conversation/item order.
 11. Explain upstream HTTP errors, connection failures, interrupted responses, malformed/unknown payloads, and browser live-feed disconnections in plain language. Distinguish upstream failures from dashboard-feed failures. Show available diagnostic details without hiding the captured messages.
 12. Retain captured history in server memory for the running session. Browser refreshes must recover existing cards and resume live updates without gaps or duplicate cards. Server restart begins an empty session; disk persistence is not required. Do not silently evict history within a session.
+13. When an upstream response lacks Content-Type but contains clearly identifiable SSE framing, recognize and interpret its events incrementally for display, including readable model text and tool-call items. Do not classify ordinary JSON or plain text as SSE merely because Content-Type is absent. Preserve original captured headers and response bytes exactly; display-only inference must not add or rewrite headers, alter bytes, or change forwarding behavior.
+
+## Next iteration: evidence and workflow
+
+The first from-scratch home build is saved in commit `936f877`. After that build, the workflow switched to editing the existing code to fix the specific observed parsing defect while preserving the already tested forwarding behavior. This specification update defines that next iteration; it does not implement the fix.
+
+All seven local tests passed outside the agent sandbox, and a real Codex file-reading request succeeded through the proxy. Separately, the manual live-capture diagnostic found that capture #5 was `POST /responses`, completed with HTTP 200, and had no Content-Type response header. Its captured body contained SSE framing beginning with `event: response.created` and a JSON `data:` line, but the capture contained zero parsed events and the dashboard displayed no interpreted model reply. This parsing finding comes from the manual live-capture diagnostic, not from the passing automated tests.
+
+The new acceptance checks below for missing Content-Type and SSE regression coverage have not passed yet and remain pending validation.
 
 ## Agreed design choices and reasons
 
@@ -44,6 +53,7 @@ The proxy currently has no browser UI, browser SSE endpoint, structured capture 
 
 - Assign a stable capture ID before forwarding each request. Associate all response chunks, status updates, and errors with that ID rather than relying on timestamps or terminal output order.
 - Capture structured data on the forwarding path without waiting for the entire reply before forwarding it to Codex. Parse streaming events incrementally across arbitrary network chunk boundaries; chunks can split UTF-8 characters or JSON events.
+- Continue recognizing SSE through the correct Content-Type. When Content-Type is missing, use clearly identifiable SSE framing (event fields and JSON data lines separated into SSE records) as display-only evidence, retaining parsing state across arbitrary chunks, including split field names, lines, record delimiters, UTF-8 characters, and JSON data. Keep ordinary JSON and plain text available through their existing inspection paths without false SSE classification. Preserve original captured headers and response bytes exactly, and keep this inference independent of forwarding.
 - Use session identity and ordered update IDs (or an equivalent consistent snapshot/resume mechanism) for initial history, refresh, and SSE reconnection. A browser subscribing during active traffic must neither miss captures nor duplicate them.
 - Match tool calls/results using protocol identifiers within the appropriate conversation/session scope. Do not merge unrelated calls merely because their names or arguments match. Show unmatched results, pending calls, and ambiguous matches explicitly; reconcile them when sufficient evidence arrives. A received tool call is a model request for execution, not proof that the harness executed it.
 - Separate captured occurrences from logical tool calls. Later history may supply a previously unseen result while repeating an old call. Update the logical pair while preserving each request's captured history.
@@ -64,6 +74,9 @@ The proxy currently has no browser UI, browser SSE endpoint, structured capture 
 9. The harness continues receiving streamed responses as they arrive. Dashboard parsing or browser disconnection does not require buffering the entire upstream response or corrupt the forwarded payload.
 10. No statistics panel, if added, displaces or substitutes for the mandatory request/message views.
 11. Dashboard labels, controls, and explanatory states use English. Messages retain their original language, including non-English text; code and JSON render left-to-right, including within messages containing right-to-left text.
+12. Pending new check: an SSE response without Content-Type, with framing matching the manual capture #5 finding (`event: response.created` followed by a JSON `data:` line), split across arbitrary network chunks (including within framing, UTF-8 characters, and JSON data), produces parsed events incrementally and readable model text/tool-call items as subsequent events arrive. Original captured headers and response bytes remain exact, and forwarded headers and bytes are unchanged by display inference.
+13. Pending new check: ordinary JSON and plain text responses without Content-Type are not incorrectly treated as SSE and remain fully inspectable.
+14. Pending new check: existing SSE responses with the correct Content-Type continue producing incremental parsed events and readable model text/tool-call items, preserving forwarding behavior.
 
 ## Optional enhancements
 
@@ -75,4 +88,4 @@ No important product decisions remain unresolved for specification review. Frame
 
 ## Review status and assumptions
 
-Ready for review. Basic Codex routing is already validated; dashboard behavior and browser live updates remain lab implementation work. Protocol details beyond the observed Codex shapes must be verified against real captured traffic during implementation. A running server retains its session in available memory; production-scale retention and multi-user operation are outside scope.
+Ready for next-iteration review. The first home build and validation evidence are recorded above; the manual live-capture diagnostic identified the missing-Content-Type SSE parsing defect. The new acceptance checks remain pending and must not be reported as passing on the strength of the seven previously passing local tests. Other dashboard acceptance criteria still require their own validation. Protocol details beyond the observed Codex shapes must be verified against real captured traffic during implementation. A running server retains its session in available memory; production-scale retention and multi-user operation are outside scope.
