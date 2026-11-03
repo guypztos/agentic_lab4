@@ -1,47 +1,37 @@
 # Live Agent Traffic Dashboard
 
-Standard-library Python proxy and browser dashboard. Requires Python 3.10+ and a modern browser. No pip packages, Node, build step, database, or installation downloads are required.
+Standard-library Python proxy and browser dashboard. The application uses Python 3 (3.10+) and its standard library; no third-party packages are required. A modern browser is required for the dashboard. Node.js is optional for the automated JavaScript interpretation test, not required to run the dashboard. No build step, database, or installation downloads are required.
 
-## Install and start (Ubuntu / WSL)
+## Setup and start (Ubuntu / WSL)
 
-From this checkout:
-
-```bash
-cd /home/rotem/ai-course/lab4
-python3 --version
-python3 proxy.py --port 8041 --dashboard-port 8042 --upstream https://chatgpt.com/backend-api
-```
-
-Open **http://127.0.0.1:8042/** in your browser (including a Windows browser with WSL localhost forwarding enabled). Both servers bind to `127.0.0.1`. Port 8041 forwards API traffic; port 8042 serves only the dashboard. Ctrl+C stops the session and clears its memory history.
-
-## Route Codex with ChatGPT login
-
-Use your existing Codex CLI installation and ChatGPT login. If necessary, authenticate normally first, before enabling proxy routing:
-
-```bash
-codex login
-```
-
-In a second WSL terminal, start Codex with a per-invocation override:
+The working directory is `/home/rotem/ai-course/lab4`. In the server terminal, run:
 
 ```bash
 cd /home/rotem/ai-course/lab4
-codex -c 'chatgpt_base_url="http://127.0.0.1:8041"'
+python3 -u proxy.py --port 8041 --dashboard-port 8042 --upstream https://chatgpt.com/backend-api/codex
 ```
 
-Keep the built-in OpenAI provider and existing ChatGPT login. The upstream above deliberately ends in `/backend-api`, so a Codex request to `/codex/responses` forwards to `/backend-api/codex/responses`. Do not add `/codex` to both the upstream and the incoming path. This command does not edit your configuration. Launch Codex normally to stop routing through the proxy.
+Open **http://127.0.0.1:8042/** in your browser (including a Windows browser with WSL localhost forwarding enabled). Both servers bind to `127.0.0.1`. Port 8041 receives Codex API traffic and forwards it to the configured upstream; port 8042 serves the dashboard. Ignore the server's Claude startup hint for this Codex setup.
 
-The [official OpenAI configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference) documents `chatgpt_base_url`; behavior varies with CLI version and managed policy. The exact routing command still needs validation against the installed CLI in your environment. A successful run should create a `/codex/responses` card before completion. If your version sends `/responses` instead, restart the proxy with `--upstream https://chatgpt.com/backend-api/codex`. A 404 card exposes the actual incoming path. This captures routed HTTP traffic only; other Codex network destinations and local tool execution are outside its visibility. WebSocket forwarding is not supported; clients must use HTTP streaming.
+Stop the server with **Ctrl+C**. Restart it after Python code changes. Captured history is held in memory and resets on restart.
 
-For the original Anthropic route:
+## Validated live Codex test
+
+Use your existing Codex CLI installation and ChatGPT login. In a separate Ubuntu terminal, run:
 
 ```bash
-python3 proxy.py --port 8041 --dashboard-port 8042
+cd /home/rotem/ai-course/lab4
+codex exec --sandbox read-only \
+  -c 'model_provider="course_proxy"' \
+  -c 'model_providers.course_proxy.name="Course proxy"' \
+  -c 'model_providers.course_proxy.base_url="http://127.0.0.1:8041"' \
+  -c 'model_providers.course_proxy.requires_openai_auth=true' \
+  "Use a shell command to read /home/rotem/ai-course/lab4-prep/sample.txt and show its exact contents. Do not modify any files."
 ```
 
-```bash
-ANTHROPIC_BASE_URL=http://127.0.0.1:8041 claude
-```
+The test file already exists in the separate prep folder at `/home/rotem/ai-course/lab4-prep/sample.txt`; no file creation is needed. These per-invocation overrides route the course proxy provider through port 8041 using existing OpenAI authentication, without editing Codex configuration. The provider sends `/responses` to the proxy, which forwards it to `https://chatgpt.com/backend-api/codex/responses`.
+
+This captures routed HTTP traffic only; other Codex network destinations and local tool execution are outside its visibility. WebSocket forwarding is not supported; clients must use HTTP streaming.
 
 ## Implemented
 
@@ -63,11 +53,15 @@ git diff --check
 
 Tests cover byte-preserving mocked forwarding, credential forwarding/redaction, session snapshots, malformed/unknown events, and SSE/UTF-8 split one byte at a time. Socket integration tests exercise overlapping requests, early streaming, HTTP errors, refused connections, interrupted SSE, static UI delivery, and reconnect snapshots. They skip with an explicit reason if the environment prohibits sockets.
 
-During this implementation: four offline tests passed; three socket integration tests skipped because the execution sandbox prohibits socket creation. Python compilation and whitespace checks passed. There is no installed browser or JavaScript runtime here, so browser interaction and the complete real-Codex round trip were not executed.
+Latest manual test result in this Ubuntu WSL environment: nine tests passed, and one JavaScript interpretation test was skipped because no JavaScript runtime was available.
+
+Manual browser validation: a live Codex request completed with HTTP 200, and its final reply containing `PINEAPPLE` appeared in the interpreted **Model response** area after the SSE fix.
+
+These results do not establish that every acceptance criterion has passed.
 
 ## Remaining validation and limitations
 
-Run the socket tests on WSL, then validate real Codex traffic: submit a prompt that requests a local tool, inspect its later result, refresh mid-stream, disconnect/reconnect the browser feed, and inspect an older expanded item as overlapping traffic arrives. Browser scroll/focus restoration, live tool rendering, and real authentication routing remain unverified acceptance criteria.
+Further acceptance validation includes inspecting a local tool's later result, refreshing mid-stream, disconnecting/reconnecting the browser feed, and inspecting an older expanded item as overlapping traffic arrives. Browser scroll/focus restoration and live tool rendering still need broader validation.
 
 There is no reliable history/new-item boundary in many payloads; the dashboard explicitly labels the combined section instead of guessing. Cross-request tool reconciliation requires an explicit `session_id` / conversation header or conversation field. Without one, calls remain scoped to the capture and cannot be safely reconciled across requests. Unknown protocols remain available in full capture but may lack a rich interpretation. In particular, Chat Completions delta tool calls are not incrementally interpreted, and compressed upstream bodies are retained but not decompressed for interpretation (Accept-Encoding is stripped on forwarding).
 
