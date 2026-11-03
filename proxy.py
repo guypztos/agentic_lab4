@@ -75,7 +75,9 @@ class Tap(BaseHTTPRequestHandler):
             self.send_header('Connection', 'close')
             self.end_headers()
             started = True
-            stream = Stream(store, card, 'text/event-stream' in reply.getheader('Content-Type', ''))
+            content_type = reply.getheader('Content-Type')
+            stream = Stream(store, card, None if content_type is None else
+                            'text/event-stream' in content_type.lower())
             count = 0
             if self.command != 'HEAD':
                 while chunk := reply.read1(4096):

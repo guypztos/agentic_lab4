@@ -61,24 +61,41 @@ class Stream:
         self.pending = ''
         self.raw = bytearray()
         self.terminal = False
+        self.finalized = False
 
     def feed(self, chunk, final=False):
+        if self.finalized:
+            return
+        self.finalized = final
         self.raw.extend(chunk)
         text = self.decoder.decode(chunk, final=final)
         with self.store.condition:
             self.card['response'] += text
             self.card['response_base64'] = base64.b64encode(self.raw).decode()
-            if self.sse:
+            if self.sse is not False:
                 self.pending += text
                 # Normalize CRLF only after a full line has arrived.
                 self.pending = self.pending.replace('\r\n', '\n')
                 while '\n\n' in self.pending:
                     frame, self.pending = self.pending.split('\n\n', 1)
-                    self.event(frame)
-                if final and self.pending.strip():
+                    if self.sse is None and self.identifiable_sse(frame):
+                        self.sse = True
+                    if self.sse:
+                        self.event(frame)
+                if final and self.sse and self.pending.strip():
                     self.event(self.pending)
                     self.card['diagnostics'].append('Stream ended with an unterminated SSE event; raw content is retained.')
             self.store.changed()
+
+    @staticmethod
+    def identifiable_sse(frame):
+        # A complete named event with JSON data is display-only evidence.
+        fields = [line for line in frame.split('\n') if line and not line.startswith(':')]
+        if not all(line.startswith(('event:', 'data:', 'id:', 'retry:')) for line in fields):
+            return False
+        named = any(line.startswith('event:') and line[6:].strip() for line in fields)
+        data = '\n'.join(line[5:].lstrip(' ') for line in fields if line.startswith('data:'))
+        return bool(named) and isinstance(decoded(data), (dict, list))
 
     def event(self, frame):
         lines = [line[5:].lstrip(' ') for line in frame.split('\n') if line.startswith('data:')]
