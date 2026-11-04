@@ -4,14 +4,19 @@ const el=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefine
 const fmt=v=>typeof v==='string'?v:JSON.stringify(v,null,2);
 let session=null,version=-1,updates=0,first=true;
 const cards=new Map(), detailState=new Map();
+// Text labels make every category identifiable without relying on color.
+const TAGS={instruction:'Instruction',definition:'Definition',user:'User',assistant:'Assistant',call:'Tool call',result:'Tool result',item:'Item',raw:'Raw capture',text:'Reply text'};
+const STATES={'awaiting reply':'◌ Awaiting reply',streaming:'● Streaming',completed:'✓ Completed',failed:'✕ Failed'};
+const size=t=>{const n=(t??'').length;return (n<1000?n:n<1e6?(n/1e3).toFixed(1)+'k':(n/1e6).toFixed(1)+'M')+' chars'};
 function detail(label,value,key,kind='item'){
  const d=el('details');d.dataset.key=key;d.dataset.kind=kind;d.open=detailState.get(key)||false;
- d.append(el('summary',label),el('pre',fmt(value)));
+ const text=fmt(value),s=el('summary');s.append(el('span',TAGS[kind]||kind,'tag'),el('span',label,'label'),el('span',size(text),'size'));s.firstChild.dataset.kind=kind;
+ const body=el('div',undefined,'body');body.append(el('pre',text));d.append(s,body);
  // Original strings stay intact; a JSON interpretation is additional.
- if(typeof value==='string'){try{const j=JSON.parse(value);d.append(el('p','Parsed JSON (original above)','muted'),el('pre',JSON.stringify(j,null,2)))}catch{}}
+ if(typeof value==='string'){try{const j=JSON.parse(value);body.append(el('p','Parsed JSON (original above)','muted parsed-note'),el('pre',JSON.stringify(j,null,2)))}catch{}}
  if(value&&typeof value==='object'){
   function inspect(v,path){
-   if(typeof v==='string'){try{const parsed=JSON.parse(v);d.append(el('p','Parsed embedded JSON · '+path+' (original retained above)','muted'),el('pre',JSON.stringify(parsed,null,2)))}catch{}}
+   if(typeof v==='string'){try{const parsed=JSON.parse(v);body.append(el('p','Parsed embedded JSON · '+path+' (original retained above)','muted parsed-note'),el('pre',JSON.stringify(parsed,null,2)))}catch{}}
    else if(v&&typeof v==='object')for(const [k,x] of Object.entries(v))inspect(x,path+'.'+k);
   }
   inspect(value,'value');
@@ -48,8 +53,15 @@ function toolParts(item){
  return out;
 }
 function category(i){if(['system','developer'].includes(i?.role))return ['instruction',`${i.role} instruction`];if(toolParts(i).length)return ['call',i.type||i.role||'tool item'];return [i?.role==='user'?'user':'item',i?.role||i?.type||'Unknown item'];}
+// Display-only refinement of category(): results and assistant messages get their own visual treatment.
+function displayKind(i,where){const [kind]=category(i);const parts=toolParts(i);
+ if(kind==='call'&&parts.every(p=>p.kind==='result'))return 'result';
+ if(kind==='item'&&(i?.role==='assistant'||where==='Response'))return 'assistant';
+ return kind;}
+function group(parent,title,count){const g=el('div',undefined,'group');const h=el('h4',title);if(count!==undefined)h.append(el('span',String(count),'count'));g.append(h);parent.append(g);return g}
+function httpClass(status){return status==null?'pending':status<300?'ok':status<400?'redirect':'bad'}
 function render(snapshot){
- if(snapshot.session!==session){if(session)$('#feed').textContent='Server restarted — new empty session.';session=snapshot.session;version=-1;cards.clear();$('#cards').replaceChildren();detailState.clear();}
+ if(snapshot.session!==session){if(session)setFeed('restart','Server restarted — new empty session. Feed connected.');session=snapshot.session;version=-1;cards.clear();$('#cards').replaceChildren();detailState.clear();}
  if(snapshot.version===version)return;version=snapshot.version;
  const visible=[...document.querySelectorAll('details')].find(n=>n.getBoundingClientRect().top>=120);
  const anchor=visible||[...document.querySelectorAll('.card')].find(n=>n.getBoundingClientRect().bottom>120);
@@ -70,58 +82,81 @@ function render(snapshot){
    occurrences.set(occurrenceKey,{key,repeated:pair.first!==c.id});
   }});
  }
+ if(snapshot.cards.length)$('#cards .empty-state')?.remove();
  for(const c of snapshot.cards){
   const serialized=JSON.stringify([c,[...logical].filter(([k,p])=>k.includes(c.scope||'unscoped-capture-'+c.id))]);
   if(cards.get(c.id)?.signature===serialized)continue;
-  const card=el('article',undefined,'card');card.id='capture-'+c.id;
-  card.append(el('h2',`#${c.id} · ${c.method} ${c.path}`),el('p',`${new Date(c.arrival).toLocaleString()} · HTTP ${c.status??'pending'} · ${c.state}`,'meta'));
-  for(const msg of c.diagnostics)card.append(el('p',msg,'error'));
-  if(c.data===null&&c.request)card.append(el('p','Request is not valid JSON. Full original body and bytes remain available.','error'));
-  const columns=el('div',undefined,'sections'),req=el('section'),res=el('section');columns.append(req,res);card.append(columns);
-  req.append(el('h3','Request · instructions'));
-  if(c.data?.instructions!==undefined)req.append(detail('Top-level instructions',c.data.instructions,c.id+'-instructions','instruction'));
-  if(c.data?.system!==undefined)req.append(detail('System instructions',c.data.system,c.id+'-system','instruction'));
-  inputs(c).forEach((i,n)=>{if(['system','developer'].includes(i?.role))req.append(detail(i.role+' instruction · input #'+n,i,c.id+'-instruction-'+n,'instruction'));});
-  req.append(el('h3','Tool definitions · available tools'));
-  (c.data?.tools||[]).forEach((i,n)=>req.append(detail('Definition · '+(i.name||i.function?.name||i.type||n),i,c.id+'-definition-'+n,'definition')));
-  req.append(el('h3','Conversation history / new input items'));
-  req.append(el('p','The payload does not reliably mark the history/new-input boundary. The first capture may already contain history. Original order is preserved.','muted'));
+  const card=el('article',undefined,'card');card.id='capture-'+c.id;card.dataset.state=c.state;
+  const head=el('header',undefined,'card-head'),title=el('h2',undefined,'card-title'),pills=el('div',undefined,'pills');
+  title.append(el('span','#'+c.id,'cid'),el('span',c.method,'method'),el('code',c.path,'path'));
+  const http=el('span','HTTP '+(c.status??'pending'),'pill http '+httpClass(c.status));
+  const state=el('span',STATES[c.state]||c.state,'pill state');state.dataset.state=c.state;
+  const arrival=new Date(c.arrival),time=el('time',arrival.toLocaleTimeString(),'time');time.dateTime=c.arrival;time.title=arrival.toLocaleString();
+  pills.append(http,state,time);head.append(title,pills);card.append(head);
+  for(const msg of c.diagnostics){const e=el('div',undefined,'error');e.append(el('strong','Problem'),el('span',msg));card.append(e)}
+  if(c.data===null&&c.request){const e=el('div',undefined,'error');e.append(el('strong','Payload'),el('span','Request is not valid JSON. Full original body and bytes remain available.'));card.append(e)}
+  const columns=el('div',undefined,'sections'),req=el('section',undefined,'panel request'),res=el('section',undefined,'panel response');columns.append(req,res);card.append(columns);
+  req.append(el('h3','Request'));
+  const bodyless=!c.request&&(c.data===null||c.data===undefined);
+  if(bodyless)req.append(el('p',`No request body (${c.method}). Headers are in the full request below.`,'muted'));
+  const instr=[];
+  if(c.data?.instructions!==undefined)instr.push(detail('Top-level instructions',c.data.instructions,c.id+'-instructions','instruction'));
+  if(c.data?.system!==undefined)instr.push(detail('System instructions',c.data.system,c.id+'-system','instruction'));
+  inputs(c).forEach((i,n)=>{if(['system','developer'].includes(i?.role))instr.push(detail(i.role+' instruction · input #'+n,i,c.id+'-instruction-'+n,'instruction'));});
+  let gh=null;
+  if(!bodyless){
+  const gi=group(req,'Instructions',instr.length);gi.append(...instr);if(!instr.length)gi.append(el('p','No instructions captured.','muted'));
+  const tools=c.data?.tools||[];
+  const gt=group(req,'Tool definitions · available tools',tools.length);
+  tools.forEach((i,n)=>gt.append(detail('Definition · '+(i.name||i.function?.name||i.type||n),i,c.id+'-definition-'+n,'definition')));
+  if(!tools.length)gt.append(el('p','No tool definitions captured.','muted'));
+  gh=group(req,'Conversation history / new input items',inputs(c).length);
+  gh.append(el('p','The payload does not reliably mark the history/new-input boundary. The first capture may already contain history. Original order is preserved.','muted hint'));
+  }
   const r=interpreted.get(c.id);
-  function itemView(i,n,where,parent){const [kind,label]=category(i);const d=detail(`${where} #${n} · ${label}`,i,`${c.id}-${where}-${n}`,kind);parent.append(d);
+  function itemView(i,n,where,parent){const [,label]=category(i);const d=detail(`${where} #${n} · ${label}`,i,`${c.id}-${where}-${n}`,displayKind(i,where));parent.append(d);
    for(const p of toolParts(i)){const o=occurrences.get(c.id+':'+(where==='Input'?n:inputs(c).length+n)+':'+p.kind+':'+p.id);if(!o)continue;
-    const pair=logical.get(o.key);const row=el('div',undefined,'pair');const left=el('div'),right=el('div');row.append(left,right);
-    const link=el('a',`${o.repeated?'Repeated historical appearance':'Logical tool reference'} · ${p.id||'missing ID'} → #${pair.first}`);link.href='#capture-'+pair.first;parent.append(link);
-    if(!pair.scope)parent.append(el('p','No explicit conversation scope: cross-request matching is uncertain and disabled.','muted'));
-    if(!p.id)parent.append(el('p','Missing protocol ID: match is ambiguous.','error'));
-    if(pair.call.length>1||pair.result.length>1)parent.append(el('p','Multiple distinct values share this ID. All variants are retained; matching is ambiguous.','error'));
-    left.append(el('strong','Tool call · requested execution'));right.append(el('strong','Matching result'));
+    const pair=logical.get(o.key);const block=el('div',undefined,'pair-block');block.dataset.repeated=o.repeated;
+    const link=el('a',`${o.repeated?'↺ Repeated historical appearance':'⇄ Logical tool reference'} · ${p.id||'missing ID'} → #${pair.first}`,'ref');link.href='#capture-'+pair.first;block.append(link);
+    if(!pair.scope)block.append(el('p','No explicit conversation scope: cross-request matching is uncertain and disabled.','muted'));
+    if(!p.id)block.append(el('p','Missing protocol ID: match is ambiguous.','warn'));
+    if(pair.call.length>1||pair.result.length>1)block.append(el('p','Multiple distinct values share this ID. All variants are retained; matching is ambiguous.','warn'));
+    const row=el('div',undefined,'pair');const left=el('div',undefined,'side'),right=el('div',undefined,'side');row.append(left,el('span','→','arrow'),right);
+    left.append(el('strong','Tool call · requested execution','side-title'));right.append(el('strong','Matching result','side-title'));
     pair.call.forEach((v,j)=>left.append(detail('Call · '+(v.name||v.function?.name||'unknown'),v,`${c.id}-${where}-${n}-call-${j}`,'call')));
     pair.result.forEach((v,j)=>right.append(detail('Result · full content',v,`${c.id}-${where}-${n}-result-${j}`,'result')));
-    if(!pair.call.length)left.append(el('p','Unmatched result: no captured call.'));
-    if(!pair.result.length)right.append(el('p','Pending: no matching result captured.'));
-    parent.append(row);
+    if(!pair.call.length)left.append(el('p','Unmatched result: no captured call.','empty-slot'));
+    if(!pair.result.length)right.append(el('p','Pending: no matching result captured.','empty-slot'));
+    block.append(row);parent.append(block);
    }
   }
-  inputs(c).forEach((i,n)=>itemView(i,n,'Input',req));
-  res.append(el('h3','Model response · streaming text and items'));
-  if(r.text){const t=el('div',r.text,'live-text');t.dataset.key=c.id+'-text';res.append(t);res.append(detail('Full streamed reply text',r.text,c.id+'-reply-text'));}
-  r.items.forEach((i,n)=>itemView(i,n,'Response',res));
-  if(!r.text&&!r.items.length)res.append(el('p',c.state==='awaiting reply'?'Awaiting upstream reply.':'No interpreted reply yet. Inspect the complete capture below.','muted'));
-  card.append(detail('Full request · headers, original body, lossless base64 bytes',{headers:c.headers,body:c.request,base64:c.request_base64},c.id+'-raw-request'));
-  card.append(detail('Full response · headers, original body, lossless base64 bytes, parsed events',{headers:c.response_headers,body:c.response,base64:c.response_base64,events:c.events},c.id+'-raw-response'));
-  const prev=cards.get(c.id);if(prev)prev.node.replaceWith(card);else $('#cards').prepend(card);
+  if(gh)inputs(c).forEach((i,n)=>itemView(i,n,'Input',gh));
+  res.append(el('h3','Model response'));
+  const gr=group(res,'Streaming text and items',r.items.length+(r.text?1:0));
+  if(r.text){const t=el('div',r.text,'live-text'+(c.state==='streaming'?' streaming':''));t.dataset.key=c.id+'-text';gr.append(t);gr.append(detail('Full streamed reply text',r.text,c.id+'-reply-text','text'));}
+  r.items.forEach((i,n)=>itemView(i,n,'Response',gr));
+  if(!r.text&&!r.items.length)gr.append(el('p',c.state==='awaiting reply'?'Awaiting upstream reply…':'No interpreted reply yet. Inspect the complete capture below.','muted'+(c.state==='awaiting reply'?' waiting':'')));
+  const raw=el('div',undefined,'raw');
+  raw.append(detail('Full request · headers, original body, lossless base64 bytes',{headers:c.headers,body:c.request,base64:c.request_base64},c.id+'-raw-request','raw'));
+  raw.append(detail('Full response · headers, original body, lossless base64 bytes, parsed events',{headers:c.response_headers,body:c.response,base64:c.response_base64,events:c.events},c.id+'-raw-response','raw'));
+  card.append(raw);
+  const prev=cards.get(c.id);if(prev)prev.node.replaceWith(card);else{if(!first)card.classList.add('arrived');$('#cards').prepend(card);}
   cards.set(c.id,{node:card,signature:serialized});
  }
- if(!snapshot.cards.length)$('#cards').textContent='Waiting for traffic. Route your agent through port 8041.';
- $('#session').textContent=`Session ${session} · ${snapshot.cards.length} captured requests · memory only`;
+ if(!snapshot.cards.length&&!$('#cards .empty-state')){const e=el('div',undefined,'empty-state');e.append(el('strong','Waiting for traffic.'),el('span','Route your agent through port 8041.'));$('#cards').replaceChildren(e)}
+ const counts={};for(const c of snapshot.cards)counts[c.state]=(counts[c.state]||0)+1;
+ const info=$('#session');info.replaceChildren(el('span','Session','k'),el('code',session,'sid'),el('span',`${snapshot.cards.length} captured requests`,'chip'));
+ for(const [s,n] of Object.entries(counts)){const chip=el('span',`${n} ${s}`,'chip');chip.dataset.state=s;info.append(chip)}
+ info.append(el('span','memory only','chip'));
  document.querySelectorAll('.live-text').forEach(n=>{n.scrollTop=scrolls.get(n.dataset.key)||0});
  const restored=anchorKey?[...document.querySelectorAll('details')].find(n=>n.dataset.key===anchorKey):document.getElementById(anchor?.id);
  if(restored)window.scrollBy(0,restored.getBoundingClientRect().top-offset);
  if(focusKey){const d=[...document.querySelectorAll('details')].find(d=>d.dataset.key===focusKey);d?.querySelector('summary')?.focus({preventScroll:true});}
- if(!first){updates++;$('#newest').textContent=`New traffic (${updates} updates) · Return to newest`;}first=false;
+ if(!first){updates++;$('#newest').textContent=`New traffic (${updates} ${updates===1?'update':'updates'}) · Return to newest`;$('#newest').classList.add('has-new');}first=false;
 }
-$('#newest').onclick=()=>{window.scrollTo({top:0,behavior:'smooth'});updates=0;$('#newest').textContent='Return to newest'};
+function setFeed(status,text){const f=$('#feed');f.dataset.status=status;f.textContent=text}
+$('#newest').onclick=()=>{window.scrollTo({top:0,behavior:'smooth'});updates=0;$('#newest').textContent='Return to newest';$('#newest').classList.remove('has-new')};
 const feed=new EventSource('/events');
-feed.onopen=()=>{$('#feed').textContent='● Dashboard feed connected'};
-feed.onerror=()=>{$('#feed').textContent='Dashboard feed disconnected. Reconnecting; upstream proxy capture continues.'};
-feed.onmessage=e=>{try{render(JSON.parse(e.data));$('#feed').textContent='● Dashboard feed connected'}catch(err){$('#feed').textContent='Dashboard rendering error: '+err.message+'; raw captures remain on server.'}};
+feed.onopen=()=>setFeed('connected','Dashboard feed connected');
+feed.onerror=()=>setFeed('disconnected','Dashboard feed disconnected. Reconnecting; upstream proxy capture continues.');
+feed.onmessage=e=>{try{render(JSON.parse(e.data));if($('#feed').dataset.status!=='restart')setFeed('connected','Dashboard feed connected')}catch(err){setFeed('error','Dashboard rendering error: '+err.message+'; raw captures remain on server.')}};
