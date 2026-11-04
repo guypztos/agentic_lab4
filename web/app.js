@@ -156,6 +156,18 @@ function render(snapshot){
 }
 function setFeed(status,text){const f=$('#feed');f.dataset.status=status;f.textContent=text}
 $('#newest').onclick=()=>{window.scrollTo({top:0,behavior:'smooth'});updates=0;$('#newest').textContent='Return to newest';$('#newest').classList.remove('has-new')};
+// Theme: follows the system until the viewer picks one; the choice is remembered per browser when storage allows.
+const THEME_KEY='agent-traffic-theme',systemDark=matchMedia('(prefers-color-scheme: dark)');
+let chosenTheme=null;try{const t=localStorage.getItem(THEME_KEY);if(t==='light'||t==='dark')chosenTheme=t}catch{}
+function applyTheme(){
+ const theme=chosenTheme||(systemDark.matches?'dark':'light'),next=theme==='dark'?'light':'dark';
+ document.documentElement.dataset.theme=theme;
+ const b=$('#theme');b.querySelector('.icon').textContent=theme==='dark'?'☀':'☾';
+ b.setAttribute('aria-label',`Switch to ${next} theme`);b.title=`Switch to ${next} theme`;
+}
+$('#theme').onclick=()=>{chosenTheme=document.documentElement.dataset.theme==='dark'?'light':'dark';try{localStorage.setItem(THEME_KEY,chosenTheme)}catch{}applyTheme()};
+systemDark.addEventListener('change',applyTheme);
+applyTheme();
 const feed=new EventSource('/events');
 feed.onopen=()=>setFeed('connected','Dashboard feed connected');
 feed.onerror=()=>setFeed('disconnected','Dashboard feed disconnected. Reconnecting; upstream proxy capture continues.');
