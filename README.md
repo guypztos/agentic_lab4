@@ -67,4 +67,4 @@ There is no reliable history/new-item boundary in many payloads; the dashboard e
 
 Full snapshots and body reserialization favor a simple, gap-free first build over scale. History never evicts and can exhaust memory; large captures can cause UI delays. Reading position restoration is best effort during layout changes and needs browser verification. Requests use Content-Length as in the original proxy; chunked uploads and WebSocket upgrades are unsupported. A timeout is reported after 600 seconds without upstream data. SSE EOF without a recognized completion marker is reported as interrupted, even if an unfamiliar protocol considers EOF normal.
 
-Optional search, filters, statistics, export, disk persistence, and remote access are not implemented. SPEC.md is unchanged.
+Search, status/tool/item-type filters, a light/dark theme toggle, and folding of repeated history are implemented in the browser only (see SPEC.md, "Visual iteration"). Statistics, export, disk persistence, and remote access are not implemented.

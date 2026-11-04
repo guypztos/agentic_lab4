@@ -3,9 +3,10 @@ const $=s=>document.querySelector(s);
 const el=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n};
 const fmt=v=>typeof v==='string'?v:JSON.stringify(v,null,2);
 let session=null,version=-1,updates=0,first=true;
-const cards=new Map(), detailState=new Map();
+const cards=new Map(), detailState=new Map(), sigCache=new Map(), cardText=new WeakMap();
+const F={q:'',kinds:new Set(),status:'',tool:''};
 // Text labels make every category identifiable without relying on color.
-const TAGS={instruction:'Instruction',definition:'Definition',user:'User',assistant:'Assistant',call:'Tool call',result:'Tool result',item:'Item',raw:'Raw capture',text:'Reply text'};
+const TAGS={instruction:'Instruction',definition:'Definition',user:'User',assistant:'Assistant',call:'Tool call',result:'Tool result',item:'Item',raw:'Raw capture',text:'Reply text',seen:'Seen before'};
 const STATES={'awaiting reply':'◌ Awaiting reply',streaming:'● Streaming',completed:'✓ Completed',failed:'✕ Failed'};
 const size=t=>{const n=(t??'').length;return (n<1000?n:n<1e6?(n/1e3).toFixed(1)+'k':(n/1e6).toFixed(1)+'M')+' chars'};
 function detail(label,value,key,kind='item'){
@@ -59,9 +60,18 @@ function displayKind(i,where){const [kind]=category(i);const parts=toolParts(i);
  if(kind==='item'&&(i?.role==='assistant'||where==='Response'))return 'assistant';
  return kind;}
 function group(parent,title,count){const g=el('div',undefined,'group');const h=el('h4',title);if(count!==undefined)h.append(el('span',String(count),'count'));g.append(h);parent.append(g);return g}
+// Links an item to the latest earlier request holding the same item. Matching is exact except that
+// Anthropic prompt-cache markers (cache_control), which clients move between turns, are ignored; the badge says when that was the only difference.
+const CACHE_KEY='cache_control';
+const looseJSON=v=>JSON.stringify(v,(k,x)=>k===CACHE_KEY?undefined:x);
+function seenBadge(d,prefix,s){if(!s)return d;const a=el('a',`↺ ${prefix} #${s.id}${s.exact?'':' · cache marker differs'}`,'seen-badge');a.href='#capture-'+s.id;
+ a.title=s.exact?`An identical copy appears in request #${s.id}`:`Request #${s.id} has the same item except for its ${CACHE_KEY} marker. The original captured object is shown unchanged.`;d.querySelector(':scope > summary .size').before(a);return d}
+function bundle(key,kind,tagText,label){const b=el('details',undefined,'bundle');b.dataset.key=key;b.dataset.kind=kind;b.open=detailState.get(key)||false;
+ const s=el('summary'),t=el('span',tagText,'tag');t.dataset.kind=kind;s.append(t,el('span',label,'label'),el('span','','size'));
+ const inner=el('div',undefined,'bundle-body');b.append(s,inner);b.addEventListener('toggle',()=>detailState.set(key,b.open));return {box:b,inner,label:s.querySelector('.label')}}
 function httpClass(status){return status==null?'pending':status<300?'ok':status<400?'redirect':'bad'}
 function render(snapshot){
- if(snapshot.session!==session){if(session)setFeed('restart','Server restarted — new empty session. Feed connected.');session=snapshot.session;version=-1;cards.clear();$('#cards').replaceChildren();detailState.clear();}
+ if(snapshot.session!==session){if(session)setFeed('restart','Server restarted — new empty session. Feed connected.');session=snapshot.session;version=-1;cards.clear();sigCache.clear();$('#cards').replaceChildren();detailState.clear();}
  if(snapshot.version===version)return;version=snapshot.version;
  const visible=[...document.querySelectorAll('details')].find(n=>n.getBoundingClientRect().top>=120);
  const anchor=visible||[...document.querySelectorAll('.card')].find(n=>n.getBoundingClientRect().bottom>120);
@@ -82,6 +92,14 @@ function render(snapshot){
    occurrences.set(occurrenceKey,{key,repeated:pair.first!==c.id});
   }});
  }
+ const seen=new Map(),lastSeen=new Map();
+ for(const c of snapshot.cards){
+  if(!c.data||typeof c.data!=='object')continue;
+  let sigs=sigCache.get(c.id);
+  if(!sigs){sigs=[];const add=(field,v)=>{if(v!==undefined){const kind=field.split(':')[0]+'|';sigs.push([field,kind+looseJSON(v),kind+JSON.stringify(v)])}};
+   add('instructions',c.data.instructions);add('system',c.data.system);add('tools',c.data.tools);inputs(c).forEach((v,n)=>add('input:'+n,v));sigCache.set(c.id,sigs)}
+  for(const [field,loose,exact] of sigs){const prev=lastSeen.get(loose);if(prev)seen.set(c.id+':'+field,{id:prev.id,exact:prev.exact===exact});lastSeen.set(loose,{id:c.id,exact})}
+ }
  if(snapshot.cards.length)$('#cards .empty-state')?.remove();
  for(const c of snapshot.cards){
   const serialized=JSON.stringify([c,[...logical].filter(([k,p])=>k.includes(c.scope||'unscoped-capture-'+c.id))]);
@@ -92,30 +110,22 @@ function render(snapshot){
   const http=el('span','HTTP '+(c.status??'pending'),'pill http '+httpClass(c.status));
   const state=el('span',STATES[c.state]||c.state,'pill state');state.dataset.state=c.state;
   const arrival=new Date(c.arrival),time=el('time',arrival.toLocaleTimeString(),'time');time.dateTime=c.arrival;time.title=arrival.toLocaleString();
-  pills.append(http,state,time);head.append(title,pills);card.append(head);
+  const mc=el('span','','pill match-count');mc.hidden=true;
+  pills.append(mc,http,state,time);head.append(title,pills);card.append(head);
   for(const msg of c.diagnostics){const e=el('div',undefined,'error');e.append(el('strong','Problem'),el('span',msg));card.append(e)}
   if(c.data===null&&c.request){const e=el('div',undefined,'error');e.append(el('strong','Payload'),el('span','Request is not valid JSON. Full original body and bytes remain available.'));card.append(e)}
   const columns=el('div',undefined,'sections'),req=el('section',undefined,'panel request'),res=el('section',undefined,'panel response');columns.append(req,res);card.append(columns);
   req.append(el('h3','Request'));
   const bodyless=!c.request&&(c.data===null||c.data===undefined);
   if(bodyless)req.append(el('p',`No request body (${c.method}). Headers are in the full request below.`,'muted'));
-  const instr=[];
-  if(c.data?.instructions!==undefined)instr.push(detail('Top-level instructions',c.data.instructions,c.id+'-instructions','instruction'));
-  if(c.data?.system!==undefined)instr.push(detail('System instructions',c.data.system,c.id+'-system','instruction'));
-  inputs(c).forEach((i,n)=>{if(['system','developer'].includes(i?.role))instr.push(detail(i.role+' instruction · input #'+n,i,c.id+'-instruction-'+n,'instruction'));});
-  let gh=null;
-  if(!bodyless){
-  const gi=group(req,'Instructions',instr.length);gi.append(...instr);if(!instr.length)gi.append(el('p','No instructions captured.','muted'));
-  const tools=c.data?.tools||[];
-  const gt=group(req,'Tool definitions · available tools',tools.length);
-  tools.forEach((i,n)=>gt.append(detail('Definition · '+(i.name||i.function?.name||i.type||n),i,c.id+'-definition-'+n,'definition')));
-  if(!tools.length)gt.append(el('p','No tool definitions captured.','muted'));
-  gh=group(req,'Conversation history / new input items',inputs(c).length);
-  gh.append(el('p','The payload does not reliably mark the history/new-input boundary. The first capture may already contain history. Original order is preserved.','muted hint'));
-  }
-  const r=interpreted.get(c.id);
-  function itemView(i,n,where,parent){const [,label]=category(i);const d=detail(`${where} #${n} · ${label}`,i,`${c.id}-${where}-${n}`,displayKind(i,where));parent.append(d);
-   for(const p of toolParts(i)){const o=occurrences.get(c.id+':'+(where==='Input'?n:inputs(c).length+n)+':'+p.kind+':'+p.id);if(!o)continue;
+  const r=interpreted.get(c.id),toolNames=new Set();
+  const nameOf=v=>v?.name||v?.function?.name;
+  const wrap=(kind,...nodes)=>{const w=el('div',undefined,'item-wrap');w.dataset.kind=kind;w.append(...nodes);return w};
+  function itemView(i,n,where,parent,prevSeen){const [,label]=category(i);const kind=displayKind(i,where);
+   const d=seenBadge(detail(`${where} #${n} · ${label}`,i,`${c.id}-${where}-${n}`,kind),'Seen in',prevSeen);
+   const w=wrap(kind,d);parent.append(w);
+   for(const p of toolParts(i)){if(p.kind==='call'&&nameOf(p.value))toolNames.add(nameOf(p.value));
+    const o=occurrences.get(c.id+':'+(where==='Input'?n:inputs(c).length+n)+':'+p.kind+':'+p.id);if(!o)continue;
     const pair=logical.get(o.key);const block=el('div',undefined,'pair-block');block.dataset.repeated=o.repeated;
     const link=el('a',`${o.repeated?'↺ Repeated historical appearance':'⇄ Logical tool reference'} · ${p.id||'missing ID'} → #${pair.first}`,'ref');link.href='#capture-'+pair.first;block.append(link);
     if(!pair.scope)block.append(el('p','No explicit conversation scope: cross-request matching is uncertain and disabled.','muted'));
@@ -123,19 +133,49 @@ function render(snapshot){
     if(pair.call.length>1||pair.result.length>1)block.append(el('p','Multiple distinct values share this ID. All variants are retained; matching is ambiguous.','warn'));
     const row=el('div',undefined,'pair');const left=el('div',undefined,'side'),right=el('div',undefined,'side');row.append(left,el('span','→','arrow'),right);
     left.append(el('strong','Tool call · requested execution','side-title'));right.append(el('strong','Matching result','side-title'));
-    pair.call.forEach((v,j)=>left.append(detail('Call · '+(v.name||v.function?.name||'unknown'),v,`${c.id}-${where}-${n}-call-${j}`,'call')));
+    pair.call.forEach((v,j)=>{if(nameOf(v))toolNames.add(nameOf(v));left.append(detail('Call · '+(nameOf(v)||'unknown'),v,`${c.id}-${where}-${n}-call-${j}`,'call'))});
     pair.result.forEach((v,j)=>right.append(detail('Result · full content',v,`${c.id}-${where}-${n}-result-${j}`,'result')));
     if(!pair.call.length)left.append(el('p','Unmatched result: no captured call.','empty-slot'));
     if(!pair.result.length)right.append(el('p','Pending: no matching result captured.','empty-slot'));
-    block.append(row);parent.append(block);
+    block.append(row);w.append(block);
    }
   }
-  if(gh)inputs(c).forEach((i,n)=>itemView(i,n,'Input',gh));
+  if(!bodyless){
+   const instr=[];
+   if(c.data?.instructions!==undefined)instr.push(seenBadge(detail('Top-level instructions',c.data.instructions,c.id+'-instructions','instruction'),'Same as',seen.get(c.id+':instructions')));
+   if(c.data?.system!==undefined)instr.push(seenBadge(detail('System instructions',c.data.system,c.id+'-system','instruction'),'Same as',seen.get(c.id+':system')));
+   inputs(c).forEach((i,n)=>{if(['system','developer'].includes(i?.role))instr.push(seenBadge(detail(i.role+' instruction · input #'+n,i,c.id+'-instruction-'+n,'instruction'),'Seen in',seen.get(c.id+':input:'+n)));});
+   const gi=group(req,'Instructions',instr.length);gi.append(...instr.map(d=>wrap('instruction',d)));if(!instr.length)gi.append(el('p','No instructions captured.','muted'));
+   const tools=Array.isArray(c.data?.tools)?c.data.tools:[];
+   const gt=group(req,'Tool definitions · available tools',tools.length);
+   if(tools.length){
+    // One collapsed row instead of a row per definition; every definition stays inside, in order.
+    const names=tools.map((i,n)=>i?.name||i?.function?.name||i?.type||String(n));
+    const b=bundle(c.id+'-definitions','definition','Definitions',`${tools.length} tools: ${names.slice(0,5).join(', ')}${names.length>5?` +${names.length-5} more`:''}`);
+    seenBadge(b.box,'Same set as',seen.get(c.id+':tools'));
+    tools.forEach((i,n)=>b.inner.append(detail('Definition · '+names[n],i,c.id+'-definition-'+n,'definition')));
+    gt.append(wrap('definition',b.box));
+   }else gt.append(el('p','No tool definitions captured.','muted'));
+   const gh=group(req,'Conversation history / new input items',inputs(c).length);
+   gh.append(el('p','The payload does not mark the history/new-input boundary. Items already present in an earlier request are folded into “Earlier history”. Matching is exact, ignoring only cache_control markers, and each badge says when a marker differed. Original order and content are preserved.','muted hint'));
+   // Consecutive previously seen items fold into one row; unseen items stay visible on their own.
+   let run=null;
+   inputs(c).forEach((i,n)=>{
+    const prev=seen.get(c.id+':input:'+n);
+    if(prev===undefined){run=null;itemView(i,n,'Input',gh);return}
+    if(!run){run=bundle(`${c.id}-seenrun-${n}`,'seen','Earlier history','');run.box.classList.add('seen-run');run.start=n;run.latest=prev.id;run.count=0;gh.append(run.box)}
+    run.count++;run.latest=Math.max(run.latest,prev.id);
+    run.label.textContent=`Input #${run.start}${run.count>1?`–#${n}`:''} · ${run.count} item${run.count===1?'':'s'} already seen in earlier requests (latest copy #${run.latest})`;
+    itemView(i,n,'Input',run.inner,prev);
+   });
+  }
   res.append(el('h3','Model response'));
   const gr=group(res,'Streaming text and items',r.items.length+(r.text?1:0));
-  if(r.text){const t=el('div',r.text,'live-text'+(c.state==='streaming'?' streaming':''));t.dataset.key=c.id+'-text';gr.append(t);gr.append(detail('Full streamed reply text',r.text,c.id+'-reply-text','text'));}
+  if(r.text){const t=el('div',r.text,'live-text'+(c.state==='streaming'?' streaming':''));t.dataset.key=c.id+'-text';gr.append(wrap('assistant',t,detail('Full streamed reply text',r.text,c.id+'-reply-text','text')));}
   r.items.forEach((i,n)=>itemView(i,n,'Response',gr));
   if(!r.text&&!r.items.length)gr.append(el('p',c.state==='awaiting reply'?'Awaiting upstream reply…':'No interpreted reply yet. Inspect the complete capture below.','muted'+(c.state==='awaiting reply'?' waiting':'')));
+  card.dataset.tools=[...toolNames].join('\n');
+  cardText.set(card,[c.method,c.path,c.request,r.text,JSON.stringify(r.items),...c.diagnostics].join('\n').toLowerCase());
   const raw=el('div',undefined,'raw');
   raw.append(detail('Full request · headers, original body, lossless base64 bytes',{headers:c.headers,body:c.request,base64:c.request_base64},c.id+'-raw-request','raw'));
   raw.append(detail('Full response · headers, original body, lossless base64 bytes, parsed events',{headers:c.response_headers,body:c.response,base64:c.response_base64,events:c.events},c.id+'-raw-response','raw'));
@@ -148,6 +188,7 @@ function render(snapshot){
  const info=$('#session');info.replaceChildren(el('span','Session','k'),el('code',session,'sid'),el('span',`${snapshot.cards.length} captured requests`,'chip'));
  for(const [s,n] of Object.entries(counts)){const chip=el('span',`${n} ${s}`,'chip');chip.dataset.state=s;info.append(chip)}
  info.append(el('span','memory only','chip'));
+ applyFilters();
  document.querySelectorAll('.live-text').forEach(n=>{n.scrollTop=scrolls.get(n.dataset.key)||0});
  const restored=anchorKey?[...document.querySelectorAll('details')].find(n=>n.dataset.key===anchorKey):document.getElementById(anchor?.id);
  if(restored)window.scrollBy(0,restored.getBoundingClientRect().top-offset);
@@ -156,6 +197,39 @@ function render(snapshot){
 }
 function setFeed(status,text){const f=$('#feed');f.dataset.status=status;f.textContent=text}
 $('#newest').onclick=()=>{window.scrollTo({top:0,behavior:'smooth'});updates=0;$('#newest').textContent='Return to newest';$('#newest').classList.remove('has-new')};
+// Search and filters: display only. Hidden cards and items stay captured and come back when filters clear.
+const textCache=new WeakMap();
+const lower=n=>{let t=textCache.get(n);if(t===undefined){t=n.textContent.toLowerCase();textCache.set(n,t)}return t};
+const filtersActive=()=>!!(F.q.trim()||F.kinds.size||F.status||F.tool);
+function applyFilters(){
+ const q=F.q.trim().toLowerCase(),kinds=F.kinds,names=new Set();let shown=0,total=0;
+ for(const {node:card} of cards.values()){
+  total++;const tools=(card.dataset.tools||'').split('\n').filter(Boolean);tools.forEach(n=>names.add(n));
+  let kindHit=!kinds.size,matches=0;
+  for(const w of card.querySelectorAll('.item-wrap')){
+   const ok=!kinds.size||kinds.has(w.dataset.kind);w.hidden=!ok;if(ok&&kinds.size)kindHit=true;
+   const m=!!q&&ok&&lower(w).includes(q);w.classList.toggle('match',m);if(m)matches++;
+  }
+  for(const run of card.querySelectorAll('.seen-run')){const ws=[...run.querySelectorAll('.item-wrap')];run.hidden=!ws.some(w=>!w.hidden);run.classList.toggle('match-inside',ws.some(w=>w.classList.contains('match')))}
+  for(const g of card.querySelectorAll('.group'))g.hidden=kinds.size>0&&![...g.querySelectorAll('.item-wrap')].some(w=>!w.hidden);
+  const show=kindHit&&(!F.status||card.dataset.state===F.status)&&(!F.tool||tools.includes(F.tool))&&(!q||(cardText.get(card)||'').includes(q));
+  card.hidden=!show;if(show)shown++;
+  const mc=card.querySelector('.match-count');mc.hidden=!(q&&show);mc.textContent=matches?`⌕ ${matches} matching item${matches===1?'':'s'}`:'⌕ Match in full capture';
+ }
+ const sel=$('#f-tool'),want=[...names].sort();if(F.tool&&!names.has(F.tool))want.push(F.tool);
+ if([...sel.options].slice(1).map(o=>o.value).join('\n')!==want.join('\n')){sel.replaceChildren(new Option('All tools',''),...want.map(n=>new Option(n,n)));sel.value=F.tool}
+ const active=filtersActive();$('#filter-status').hidden=!active;$('#filter-count').textContent=`Showing ${shown} of ${total} requests`;
+ $('#no-match').hidden=!(active&&total>0&&shown===0);
+}
+let qTimer;
+$('#q').addEventListener('input',e=>{clearTimeout(qTimer);qTimer=setTimeout(()=>{F.q=e.target.value;applyFilters()},150)});
+$('#q').addEventListener('keydown',e=>{if(e.key==='Escape'){e.target.value='';F.q='';applyFilters()}});
+$('#f-status').onchange=e=>{F.status=e.target.value;applyFilters()};
+$('#f-tool').onchange=e=>{F.tool=e.target.value;applyFilters()};
+document.querySelectorAll('#kinds .tag').forEach(b=>b.onclick=()=>{const k=b.dataset.kind;if(F.kinds.has(k))F.kinds.delete(k);else F.kinds.add(k);b.setAttribute('aria-pressed',String(F.kinds.has(k)));applyFilters()});
+$('#clear').onclick=()=>{F.q='';F.kinds.clear();F.status='';F.tool='';$('#q').value='';$('#f-status').value='';$('#f-tool').value='';document.querySelectorAll('#kinds .tag').forEach(b=>b.setAttribute('aria-pressed','false'));applyFilters()};
+document.addEventListener('keydown',e=>{if(e.key==='/'&&!e.metaKey&&!e.ctrlKey&&!e.altKey&&!/^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement?.tagName||'')){e.preventDefault();$('#q').focus()}});
+new ResizeObserver(()=>document.documentElement.style.setProperty('--topbar-h',$('.topbar').offsetHeight+'px')).observe($('.topbar'));
 // Theme: follows the system until the viewer picks one; the choice is remembered per browser when storage allows.
 const THEME_KEY='agent-traffic-theme',systemDark=matchMedia('(prefers-color-scheme: dark)');
 let chosenTheme=null;try{const t=localStorage.getItem(THEME_KEY);if(t==='light'||t==='dark')chosenTheme=t}catch{}

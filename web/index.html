@@ -24,16 +24,30 @@
   <section class="intro" aria-label="Session">
     <p id="session"></p>
     <p class="notice">Only traffic routed through the proxy is visible. A tool call requests execution; capture times do not establish execution times. Credentials in transport headers are redacted.</p>
-    <ul class="legend" aria-label="Item categories">
-      <li><span class="tag" data-kind="instruction">Instruction</span></li>
-      <li><span class="tag" data-kind="definition">Definition</span></li>
-      <li><span class="tag" data-kind="user">User</span></li>
-      <li><span class="tag" data-kind="assistant">Assistant</span></li>
-      <li><span class="tag" data-kind="call">Tool call</span></li>
-      <li><span class="tag" data-kind="result">Tool result</span></li>
-      <li><span class="tag" data-kind="item">Other item</span></li>
-    </ul>
   </section>
+  <section class="toolbar" aria-label="Search and filters">
+    <input id="q" type="search" placeholder="Search captures  ( / )" aria-label="Search captures" autocomplete="off" spellcheck="false">
+    <select id="f-status" aria-label="Filter by status">
+      <option value="">All statuses</option>
+      <option value="awaiting reply">Awaiting reply</option>
+      <option value="streaming">Streaming</option>
+      <option value="completed">Completed</option>
+      <option value="failed">Failed</option>
+    </select>
+    <select id="f-tool" aria-label="Filter by tool name"><option value="">All tools</option></select>
+    <div id="kinds" class="kinds" role="group" aria-label="Item types: click to show only these">
+      <span class="kinds-label">Types</span>
+      <button type="button" class="tag" data-kind="instruction" aria-pressed="false">Instruction</button>
+      <button type="button" class="tag" data-kind="definition" aria-pressed="false">Definition</button>
+      <button type="button" class="tag" data-kind="user" aria-pressed="false">User</button>
+      <button type="button" class="tag" data-kind="assistant" aria-pressed="false">Assistant</button>
+      <button type="button" class="tag" data-kind="call" aria-pressed="false">Tool call</button>
+      <button type="button" class="tag" data-kind="result" aria-pressed="false">Tool result</button>
+      <button type="button" class="tag" data-kind="item" aria-pressed="false">Other item</button>
+    </div>
+    <p id="filter-status" hidden><span id="filter-count"></span><button type="button" id="clear">Clear filters</button></p>
+  </section>
+  <p id="no-match" class="no-match" hidden>No captured requests match the current filters. Captures are still recorded; clear the filters to see them.</p>
   <div id="cards">
     <div class="empty-state">
       <strong>Waiting for traffic.</strong>

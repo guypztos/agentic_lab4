@@ -76,6 +76,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html { background: var(--bg); }
 body {
   margin: 0;
@@ -165,8 +166,7 @@ main { max-width: 1440px; margin: 0 auto; padding: 22px 24px 64px; }
 .chip[data-state="completed"]::before { background: var(--ok); }
 .chip[data-state="streaming"]::before { background: var(--info); }
 .chip[data-state="failed"]::before { background: var(--bad); }
-.notice { margin: 0 0 12px; max-width: 90ch; color: var(--muted); font-size: 13px; }
-.legend { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: 0; padding: 0; }
+.notice { margin: 0; max-width: 90ch; color: var(--muted); font-size: 13px; }
 
 .empty-state {
   display: grid; place-items: center; gap: 4px; text-align: center;
@@ -359,6 +359,54 @@ pre {
 /* ---------- Raw capture ---------- */
 .raw { margin: 4px 20px 12px 24px; padding-top: 12px; border-top: 1px solid var(--border); }
 
+/* ---------- Search and filter toolbar ---------- */
+.toolbar {
+  position: sticky; top: var(--topbar-h, 60px); z-index: 5;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px;
+  margin: 0 0 18px; padding: 10px 12px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  backdrop-filter: saturate(160%) blur(12px); -webkit-backdrop-filter: saturate(160%) blur(12px);
+  border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
+}
+.toolbar input, .toolbar select {
+  font: inherit; font-size: 13px; color: var(--text);
+  background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 999px;
+  padding: 6px 12px; min-height: 32px;
+}
+.toolbar input { flex: 1 1 220px; min-width: 0; padding-left: 32px;
+  background-image: radial-gradient(circle at 15px 50%, transparent 4.5px, var(--muted) 4.5px 6px, transparent 6px);
+}
+.toolbar input:focus, .toolbar select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+.toolbar select { cursor: pointer; max-width: 180px; }
+.kinds { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.kinds-label { font-size: 10.5px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin-right: 2px; }
+.kinds .tag { cursor: pointer; font: inherit; font-size: 10.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; padding: 3px 8px; border-radius: 5px; transition: background .15s; }
+.kinds .tag:hover { border-color: var(--k); }
+.kinds .tag[aria-pressed="true"] { color: var(--surface); background: var(--k); border-color: var(--k); }
+.kinds .tag[aria-pressed="true"]::before { content: "✓ "; }
+#filter-status { display: flex; align-items: center; gap: 10px; margin: 0 0 0 auto; font-size: 12.5px; font-weight: 600; color: var(--accent); }
+#filter-status button { padding: 4px 10px; font-size: 12px; }
+.no-match { margin: 0 0 18px; padding: 28px; text-align: center; color: var(--muted); border: 1.5px dashed var(--border-strong); border-radius: var(--radius); }
+
+/* Search hits: outline plus a ⌕ marker, so matches are not shown by color alone. */
+.item-wrap.match > details { box-shadow: 0 0 0 2px color-mix(in srgb, var(--warn) 70%, transparent); }
+.item-wrap.match > details > summary .label::before { content: "⌕ "; color: var(--warn); font-weight: 700; }
+.seen-run.match-inside > summary .label::after { content: "  ⌕ contains matches"; color: var(--warn); font-weight: 600; }
+.pill.match-count { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); background: var(--warn-bg); }
+
+/* ---------- Folded repetition ---------- */
+.bundle-body { padding: 6px 8px 4px; }
+details[data-kind="seen"] { --k: var(--muted); border-left-style: dashed; background: transparent; }
+details[data-kind="seen"]:not([open]) > summary .label { color: var(--muted); }
+.tag[data-kind="seen"] { --k: var(--muted); border-style: dashed; }
+.seen-badge {
+  flex: none; font-size: 11px; font-weight: 500; white-space: nowrap;
+  padding: 1px 8px; border-radius: 999px;
+  color: var(--muted); border: 1px dashed var(--border-strong);
+}
+.seen-badge:hover { color: var(--link); border-color: var(--link); text-decoration: none; }
+.item-wrap > .pair-block { margin-top: 2px; }
+
 /* ---------- Motion ---------- */
 @keyframes pulse { 50% { opacity: .45; } }
 @keyframes blink { 50% { opacity: 0; } }
@@ -379,6 +427,8 @@ pre {
   #newest { margin-left: auto; }
   main { padding: 16px 16px 48px; }
   .topbar { gap: 10px; padding: 10px 16px; }
+  .toolbar { position: static; }
+  #filter-status { margin-left: 0; }
 }
 
 /* Inside a call/result pair the same item is already sized above; keep labels on one line. */

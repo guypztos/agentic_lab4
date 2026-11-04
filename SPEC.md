@@ -91,6 +91,24 @@ The acceptance checks below for missing Content-Type, SSE regression coverage, a
 
 After mandatory acceptance criteria pass, prioritize search and filtering by tool or message type. Possible later additions include timing/token statistics when actually present in traffic, request counts, and richer navigation. Statistics must label unavailable or estimated values and distinguish logical calls from repeated historical appearances. Persistence, export, remote access, and authentication for remote access are outside the agreed lab scope.
 
+## Visual iteration: implemented changes and fixes
+
+The visual work on `feature/dashboard-visuals` changes only `web/`. Capture, forwarding, and the interpreter functions covered by the JavaScript rendering test (`responseItems`, `toolParts`, `category`) are unchanged. Validation used real Claude Code traffic routed through the proxy on macOS (Anthropic upstream), plus a local mock upstream for Codex-shaped SSE. It was not repeated on Ubuntu/WSL with Codex.
+
+Implemented optional enhancements:
+
+- **Search and filters.** Free-text search across captured requests and interpreted replies, filters by lifecycle status and by tool name, and the item-type legend doubles as toggle filters. Filtering is display-only: hidden cards and items remain captured and return when filters clear. Search hits carry an outline and a ⌕ marker, not color alone. A "Showing N of M requests" line and an explicit no-match message prevent filters from being mistaken for missing traffic.
+- **Reduced repetition.** Tool definitions collapse to one row listing tool names, with every definition inside. Input items that already appeared in an earlier request link to that request ("Seen in #N"), and consecutive such items fold into one "Earlier history" row. Original order and full content are preserved, and the history/new-input boundary is still described as unmarked by the protocol.
+
+Fixes, with the evidence for each:
+
+1. **Repetition folding missed the previous turn (`cache_control`).** Observed in live Claude Code traffic: comparing capture #7 with #8, the history item at index 4 differed only by a `cache_control` marker. The client moves this prompt-cache marker to the newest messages on every request, so strict whole-object comparison never folded the most recent repeated turn. Fix: folding comparison ignores only `cache_control` keys. When the marker was the only difference, the badge says "cache marker differs", and the item still opens to its original captured object, marker included. Verified on live traffic: in a four-request tool run (#5–#8), each follow-up request (#6–#8) then showed only its two new items (the latest tool call and its result) unfolded. This parallels the metadata-only duplicate finding for tool calls above. It does not change tool-call matching, whose pending checks 15–18 are unaffected.
+2. **Waiting message persisted.** The "Waiting for traffic" placeholder stayed beneath the first card after traffic arrived. It is now removed when the first card renders and restored only for an empty session. Verified in the browser with mock and live traffic.
+3. **Server-restart notice was overwritten.** After a server restart, the feed status was immediately replaced by "connected", so the restart was never visible (acceptance criterion 7). The restart notice is now kept. This is a code change only; it has not yet been validated with a real server restart.
+4. **Update count grammar.** The new-traffic control read "1 updates"; it now uses the singular for one update.
+
+These results do not establish that any pending acceptance check has passed.
+
 ## Decision status
 
 No important product decisions remain unresolved for specification review. Framework and internal module layout may be chosen during the lab provided they satisfy this specification.
