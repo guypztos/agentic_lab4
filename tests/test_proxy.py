@@ -151,6 +151,139 @@ class CaptureTests(unittest.TestCase):
 
 
 class RenderingTests(unittest.TestCase):
+    def run_dashboard_js(self, checks):
+        import shutil
+        import subprocess
+        from pathlib import Path
+        runtime = shutil.which('node') or shutil.which('nodejs')
+        if not runtime:
+            self.skipTest('JavaScript runtime unavailable; tool matching requires browser validation')
+        script = (Path(__file__).resolve().parents[1] / 'web/app.js').read_text()
+        script = script.split("$('#newest').onclick=")[0]
+        script += r"""
+const assert = require('node:assert/strict');
+const call = {type:'custom_tool_call', id:'tool1',
+ call_id:'call_eef7f2bbd7a1498486b6679a77dc2be3', name:'exec',
+ input:'cat sample.txt', status:'completed'};
+const result = {type:'custom_tool_call_output', call_id:call.call_id,
+ output:[{type:'text',text:'hello'},{type:'json',value:{nested:[1,2]}}]};
+const capture = (id, scope, input=[], output=[]) => ({id,scope,data:{input},
+ request:JSON.stringify({input}),diagnostics:[],state:'completed',method:'POST',
+ path:'/responses',arrival:'2026-11-04T00:00:00Z',status:200,
+ events:output.map((item,output_index)=>({type:'response.output_item.done',item,output_index}))});
+const freeze = value => {if(value && typeof value==='object'){
+ Object.values(value).forEach(freeze); Object.freeze(value);} return value;};
+const pairFor = (index, scope, id=call.call_id) => index.logical.get(JSON.stringify([scope,id]));
+"""
+        completed = subprocess.run([runtime, '-e', script + checks], capture_output=True, text=True)
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+    def test_metadata_repetitions_pair_and_preserve_originals(self):
+        self.run_dashboard_js(r"""
+const decorated = {...call, metadata:{turn_id:'turn1',created_at:123,nested:{values:[1,2]}},
+ internal_chat_message_metadata_passthrough:{turn_id:'turn1',created_at:123}};
+// Reverse outer property order as well as adding the observed metadata.
+const reordered = Object.fromEntries(Object.entries(decorated).reverse());
+const captures = freeze([capture(1,'session',[],[call]),
+ capture(2,'session',[reordered,result]), capture(3,'session',[call,result])]);
+const before = JSON.stringify(captures);
+const index = toolIndex(captures), pair = pairFor(index,'session');
+assert.equal(index.logical.size,1);
+assert.equal(pair.call.length,1); assert.equal(pair.result.length,1);
+assert.deepEqual(pair.call[0],call); assert.strictEqual(pair.result[0],result);
+assert.equal(index.occurrences.size,5);
+assert.equal(index.occurrences.get('2:0:call:'+call.call_id).repeated,true);
+assert.equal(index.occurrences.get('3:0:call:'+call.call_id).key,
+ index.occurrences.get('1:0:call:'+call.call_id).key);
+assert.equal(JSON.stringify(captures),before);
+assert.equal('metadata' in captures[0].events[0].item,false);
+assert.deepEqual(captures[1].data.input[0].metadata,decorated.metadata);
+assert.deepEqual(captures[1].data.input[0].internal_chat_message_metadata_passthrough,
+ decorated.internal_chat_message_metadata_passthrough);
+
+// Exercise the actual renderer with a small DOM stand-in, without a live feed.
+class Element {
+ constructor(tag){this.tagName=tag;this.children=[];this.dataset={};this.classList={add(){}};this.textContent='';}
+ append(...nodes){this.children.push(...nodes);}
+ prepend(node){this.children.unshift(node);}
+ replaceChildren(...nodes){this.children=nodes;}
+ get firstChild(){return this.children[0];}
+ addEventListener(){}
+}
+const roots = new Map(['#cards','#session','#newest'].map(k=>[k,new Element('div')]));
+global.document={querySelector:s=>roots.get(s)||null,querySelectorAll:()=>[],
+ createElement:tag=>new Element(tag),getElementById:()=>null};
+const flatten = node => [node,...node.children.flatMap(flatten)];
+render({session:'server',version:1,cards:captures});
+const nodes=flatten(roots.get('#cards'));
+assert.equal(nodes.some(n=>n.textContent.includes('matching is ambiguous')),false);
+assert.equal(nodes.filter(n=>n.className==='pair').length,5);
+for(const row of nodes.filter(n=>n.className==='pair')){
+ assert.equal(row.children[0].children.filter(n=>n.tagName==='details').length,1);
+ assert.equal(row.children[2].children.filter(n=>n.tagName==='details').length,1);
+}
+assert.ok(nodes.some(n=>n.textContent.includes('Repeated historical appearance')));
+assert.ok(nodes.some(n=>n.tagName==='pre'&&n.textContent.includes('internal_chat_message_metadata_passthrough')));
+// A genuine conflict must still reach the visible warning and both call details.
+roots.get('#cards').replaceChildren(); cards.clear();
+render({session:'server',version:2,cards:[capture(4,'conflict',[call,{...call,input:'pwd'},result])]});
+const conflicting=flatten(roots.get('#cards'));
+assert.ok(conflicting.some(n=>n.textContent.includes('matching is ambiguous')));
+assert.equal(conflicting.filter(n=>n.className==='pair').length,3);
+for(const row of conflicting.filter(n=>n.className==='pair'))
+ assert.equal(row.children[0].children.filter(n=>n.tagName==='details').length,2);
+""")
+
+    def test_tool_identity_and_input_conflicts(self):
+        self.run_dashboard_js(r"""
+for(const changed of [{...call,name:'other'}, {...call,type:'function_call'},
+ {...call,input:'pwd'}, {...call,arguments:'different'}]){
+ const pair=pairFor(toolIndex([capture(1,'scope',[call,changed,result])]),'scope');
+ assert.equal(pair.call.length,2); assert.equal(pair.result.length,1);
+ assert.strictEqual(pair.call[0],call); assert.strictEqual(pair.call[1],changed);
+}
+// Supported function/Anthropic/Chat Completions argument representations.
+for(const original of [
+ {type:'function_call',call_id:call.call_id,name:'exec',arguments:'{"a":1}'},
+ {type:'tool_use',id:call.call_id,name:'exec',input:{a:1,b:[2,3]}},
+ {id:call.call_id,type:'function',function:{name:'exec',arguments:'{"a":1}'}}
+]){
+ const wrap = value => original.type==='function'?{role:'assistant',tool_calls:[value]}:value;
+ const reordered=Object.fromEntries(Object.entries(original).reverse());
+ const same=toolIndex([capture(1,'scope',[wrap(original),wrap(reordered)])]);
+ assert.equal(pairFor(same,'scope').call.length,1);
+ const changed=original.function?{...original,function:{...original.function,arguments:'{"a":2}'}}:
+  original.input?{...original,input:{a:2,b:[2,3]}}:{...original,arguments:'{"a":2}'};
+ const conflict=toolIndex([capture(1,'scope',[wrap(original),wrap(changed)])]);
+ assert.equal(pairFor(conflict,'scope').call.length,2);
+}
+const objectCall={...call,input:{a:1,b:[2,3]}};
+assert.equal(pairFor(toolIndex([capture(1,'scope',[objectCall,
+ {...objectCall,input:{b:[2,3],a:1}}])]),'scope').call.length,1);
+assert.equal(pairFor(toolIndex([capture(1,'scope',[objectCall,
+ {...objectCall,input:{a:1,b:[3,2]}}])]),'scope').call.length,2);
+const resultConflict=pairFor(toolIndex([capture(1,'scope',[call,result,{...result,output:'different'}])]),'scope');
+assert.equal(resultConflict.result.length,2);
+""")
+
+    def test_tool_ids_and_scopes_remain_separate(self):
+        self.run_dashboard_js(r"""
+const other={...call,call_id:'other'};
+const index=toolIndex([capture(1,'one',[call,other]),capture(2,'two',[call,result]),
+ capture(3,'one',[{...result,call_id:'other'}])]);
+assert.equal(index.logical.size,3);
+assert.equal(pairFor(index,'one').result.length,0);
+assert.equal(pairFor(index,'one','other').result.length,1);
+assert.equal(pairFor(index,'two').result.length,1);
+const unscoped=toolIndex([capture(1,null,[call]),capture(2,null,[result])]);
+assert.equal(unscoped.logical.size,2);
+assert.equal(pairFor(unscoped,'unscoped-capture-1').result.length,0);
+assert.equal(pairFor(unscoped,'unscoped-capture-2').call.length,0);
+const missing=toolIndex([capture(1,'scope',[{type:'custom_tool_call',name:'exec',input:''},
+ {type:'custom_tool_call_output',output:'unknown'}])]);
+assert.equal(missing.logical.size,2);
+""")
+
     def test_parsed_events_render_text_and_tool_items(self):
         import shutil
         import subprocess
