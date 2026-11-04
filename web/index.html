@@ -1,1 +1,44 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agent Traffic</title><link rel="stylesheet" href="/style.css"><script defer src="/app.js"></script></head><body><header><div><small>LOCAL SESSION · LIVE INSPECTOR</small><h1>Agent Traffic</h1></div><div id="feed" role="status">Connecting to dashboard feed…</div><button id="newest">Return to newest</button></header><main><p id="session"></p><p class="notice">Only traffic routed through the proxy is visible. A tool call requests execution; capture times do not establish execution times. Credentials in transport headers are redacted.</p><div id="cards"><p>Waiting for traffic. Route your agent through port 8041.</p></div></main></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agent Traffic</title>
+<link rel="stylesheet" href="/style.css">
+<script defer src="/app.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo" aria-hidden="true"></span>
+    <div>
+      <small class="eyebrow">Local session · Live inspector</small>
+      <h1>Agent Traffic</h1>
+    </div>
+  </div>
+  <div id="feed" role="status" data-status="connecting">Connecting to dashboard feed…</div>
+  <button id="newest" type="button">Return to newest</button>
+</header>
+<main>
+  <section class="intro" aria-label="Session">
+    <p id="session"></p>
+    <p class="notice">Only traffic routed through the proxy is visible. A tool call requests execution; capture times do not establish execution times. Credentials in transport headers are redacted.</p>
+    <ul class="legend" aria-label="Item categories">
+      <li><span class="tag" data-kind="instruction">Instruction</span></li>
+      <li><span class="tag" data-kind="definition">Definition</span></li>
+      <li><span class="tag" data-kind="user">User</span></li>
+      <li><span class="tag" data-kind="assistant">Assistant</span></li>
+      <li><span class="tag" data-kind="call">Tool call</span></li>
+      <li><span class="tag" data-kind="result">Tool result</span></li>
+      <li><span class="tag" data-kind="item">Other item</span></li>
+    </ul>
+  </section>
+  <div id="cards">
+    <div class="empty-state">
+      <strong>Waiting for traffic.</strong>
+      <span>Route your agent through port 8041.</span>
+    </div>
+  </div>
+</main>
+</body>
+</html>
