@@ -60,6 +60,34 @@ function displayKind(i,where){const [kind]=category(i);const parts=toolParts(i);
  return kind;}
 function group(parent,title,count){const g=el('div',undefined,'group');const h=el('h4',title);if(count!==undefined)h.append(el('span',String(count),'count'));g.append(h);parent.append(g);return g}
 function httpClass(status){return status==null?'pending':status<300?'ok':status<400?'redirect':'bad'}
+// Compare JSON values without depending on object property insertion order.
+// Strings (including serialized arguments) remain exact; arrays retain their order.
+function canonical(value){
+ if(Array.isArray(value))return value.map(canonical);
+ if(value&&typeof value==='object')return Object.fromEntries(Object.keys(value).sort().map(k=>[k,canonical(value[k])]));
+ return value;
+}
+function toolSignature(part){
+ const v=part.value;
+ // IDs are already scoped by the index. Status, item IDs and bookkeeping
+ // metadata describe an occurrence, not the requested tool execution.
+ const identity=part.kind==='call'?{type:v.type,name:v.name,functionName:v.function?.name,input:v.input,arguments:v.arguments,functionArguments:v.function?.arguments}:v;
+ return JSON.stringify(canonical(identity));
+}
+function toolIndex(captures){
+ const logical=new Map(),occurrences=new Map(),interpreted=new Map();
+ for(const c of captures){const r=responseItems(c);interpreted.set(c.id,r);
+  [...inputs(c),...r.items].forEach((item,index)=>{for(const p of toolParts(item)){
+   const key=JSON.stringify([c.scope||'unscoped-capture-'+c.id,p.id||'missing-'+c.id+'-'+index]);
+   if(!logical.has(key))logical.set(key,{call:[],result:[],first:c.id,scope:!!c.scope,id:p.id});
+   const pair=logical.get(key),signature=toolSignature(p);
+   if(!pair[p.kind].some(value=>toolSignature({kind:p.kind,value})===signature))pair[p.kind].push(p.value);
+   const occurrenceKey=c.id+':'+index+':'+p.kind+':'+p.id;
+   occurrences.set(occurrenceKey,{key,repeated:pair.first!==c.id});
+  }});
+ }
+ return {logical,occurrences,interpreted};
+}
 function render(snapshot){
  if(snapshot.session!==session){if(session)setFeed('restart','Server restarted — new empty session. Feed connected.');session=snapshot.session;version=-1;cards.clear();$('#cards').replaceChildren();detailState.clear();}
  if(snapshot.version===version)return;version=snapshot.version;
@@ -71,17 +99,7 @@ function render(snapshot){
  // Save nested scroll positions and expanded state before replacing a card.
  document.querySelectorAll('details').forEach(d=>detailState.set(d.dataset.key,d.open));
  const scrolls=new Map([...document.querySelectorAll('.live-text')].map(n=>[n.dataset.key,n.scrollTop]));
- const logical=new Map(), occurrences=new Map(), interpreted=new Map();
- for(const c of snapshot.cards){const r=responseItems(c);interpreted.set(c.id,r);
-  [...inputs(c),...r.items].forEach((item,index)=>{for(const p of toolParts(item)){
-   const key=JSON.stringify([c.scope||'unscoped-capture-'+c.id,p.id||'missing-'+c.id+'-'+index]);
-   if(!logical.has(key))logical.set(key,{call:[],result:[],first:c.id,scope:!!c.scope,id:p.id});
-   const pair=logical.get(key);const signature=JSON.stringify(p.value);
-   if(!pair[p.kind].some(x=>JSON.stringify(x)===signature))pair[p.kind].push(p.value);
-   const occurrenceKey=c.id+':'+index+':'+p.kind+':'+p.id;
-   occurrences.set(occurrenceKey,{key,repeated:pair.first!==c.id});
-  }});
- }
+ const {logical,occurrences,interpreted}=toolIndex(snapshot.cards);
  if(snapshot.cards.length)$('#cards .empty-state')?.remove();
  for(const c of snapshot.cards){
   const serialized=JSON.stringify([c,[...logical].filter(([k,p])=>k.includes(c.scope||'unscoped-capture-'+c.id))]);
